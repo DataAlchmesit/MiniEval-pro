@@ -14,7 +14,9 @@ class FaithfulnessResult:
     label: str          # "faithful" | "neutral" | "contradicts"
     confidence: float   # how sure the model is
     explanation: str    # human readable reason
-
+    entailment: float = 0.0
+    contradiction: float = 0.0
+    neutral: float = 0.0 
 
 class FaithfulnessScorer:
     """
@@ -126,4 +128,7 @@ class FaithfulnessScorer:
             label=label,
             confidence=round(max(entailment, contradiction, neutral), 4),
             explanation=explanation,
+            entailment=round(entailment, 4),
+            contradiction=round(contradiction, 4),
+            neutral=round(neutral, 4)
         )
