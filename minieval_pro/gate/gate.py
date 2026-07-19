@@ -27,6 +27,7 @@ import hashlib
 import json
 
 from ..scorers.faithfulness import FaithfulnessScorer, FaithfulnessResult
+from ..scorers.relevance import RelevanceScorer
 from ..scorers.attribution import check_attribution
 
 
@@ -63,6 +64,19 @@ class Policy:
         overwrite_requires_faithful
                           if True, an incoming memory may only overwrite an
                           existing one when it is itself labelled faithful
+        min_relatedness   semantic similarity floor below which a "contradiction"
+                          is treated as spurious. NLI models have no label for
+                          "these texts are unrelated", so they often emit high
+                          contradiction on pairs that simply have nothing to do
+                          with each other. See note below on how this was chosen.
+        check_attribution whether to run the third-party attribution pre-check
+
+    On min_relatedness — an empirical default, not a truth:
+
+        Measured over a small diagnostic set, unrelated pairs scored 0.46-0.53
+        similarity while genuine contradictions scored 0.63-0.79. The default
+        sits in that gap. The sample was small; treat this as a starting point
+        and tune it against your own data.
     """
 
     name: str = "default"
@@ -70,6 +84,8 @@ class Policy:
     store_threshold: float = 0.5
     reject_on: tuple[str, ...] = ("contradicts",)
     overwrite_requires_faithful: bool = True
+    min_relatedness: float = 0.58
+    check_attribution: bool = True
 
     def fingerprint(self) -> str:
         """
@@ -85,7 +101,8 @@ class Policy:
     def describe(self) -> str:
         return (
             f"{self.name} v{self.version} "
-            f"(store>={self.store_threshold}, reject_on={list(self.reject_on)})"
+            f"(store>={self.store_threshold}, reject_on={list(self.reject_on)}, "
+            f"min_relatedness={self.min_relatedness})"
         )
 
 
@@ -110,6 +127,7 @@ class GateDecision:
     entailment: Optional[float] = None
     contradiction: Optional[float] = None
     neutral: Optional[float] = None
+    relatedness: Optional[float] = None
 
     @property
     def stored(self) -> bool:
@@ -176,16 +194,24 @@ class MemoryGate:
 
     Both attach the policy in force to the decision, so past decisions stay
     reproducible after the policy changes.
+
+    Two guards sit around the NLI scorer, because the model answers questions
+    it was not designed for:
+
+      attribution   the model has no notion of *whose* fact this is
+      relatedness   the model has no label for "these texts are unrelated"
     """
 
     def __init__(
         self,
         policy: Optional[Policy] = None,
         scorer: Optional[FaithfulnessScorer] = None,
+        relevance_scorer: Optional[RelevanceScorer] = None,
     ):
         self.policy = policy or Policy()
-        # Injectable for testing — a fake scorer keeps core tests offline.
+        # Injectable for testing — fakes keep core tests offline.
         self._scorer = scorer or FaithfulnessScorer()
+        self._relevance = relevance_scorer or RelevanceScorer()
 
     # -- internals ---------------------------------------------------------
 
@@ -195,6 +221,36 @@ class MemoryGate:
 
     def _score(self, source: str, fact: str) -> FaithfulnessResult:
         return self._scorer.score(context=source, answer=fact)
+
+    def _relatedness(self, source: str, fact: str) -> float:
+        """Semantic similarity between a source and a candidate fact."""
+        return self._relevance.score(source, fact).score
+
+    def _decision(
+        self,
+        verdict: str,
+        fact: str,
+        source: str,
+        result: FaithfulnessResult,
+        reason: str,
+        relatedness: Optional[float] = None,
+    ) -> GateDecision:
+        return GateDecision(
+            verdict=verdict,
+            fact=fact,
+            source=source,
+            faithfulness=result.score,
+            label=result.label,
+            reason=reason,
+            policy_name=self.policy.name,
+            policy_version=self.policy.version,
+            policy_fingerprint=self.policy.fingerprint(),
+            timestamp=self._now(),
+            entailment=getattr(result, "entailment", None),
+            contradiction=getattr(result, "contradiction", None),
+            neutral=getattr(result, "neutral", None),
+            relatedness=relatedness,
+        )
 
     # -- public API --------------------------------------------------------
 
@@ -212,54 +268,71 @@ class MemoryGate:
         """
         result = self._score(source, fact)
 
-        # Attribution pre-check. The NLI model has no notion of whose fact
-        # this is: "my brother is a lawyer" entails "the user is a lawyer"
-        # at 0.99. Downgrade to REVIEW rather than storing a misattribution.
-        attribution = check_attribution(source, fact)
-        if attribution.third_party and attribution.confidence == "high":
-            return GateDecision(
-                verdict=REVIEW,
+        # Guard 1 — attribution.
+        # The NLI model has no notion of whose fact this is: "my brother is a
+        # lawyer" entails "the user is a lawyer" at 0.99. Downgrade rather
+        # than storing a misattribution.
+        if self.policy.check_attribution:
+            attribution = check_attribution(source, fact)
+            if attribution.third_party and attribution.confidence == "high":
+                return self._decision(
+                    verdict=REVIEW,
+                    fact=fact,
+                    source=source,
+                    result=result,
+                    reason=f"Possible misattribution. {attribution.explanation}",
+                )
+
+        # Guard 2 — relatedness.
+        # The model has no label for "these texts are unrelated", so it often
+        # emits high contradiction on pairs that simply have nothing to do
+        # with each other. Rejecting those is silent data loss: an unsupported
+        # fact should be flagged, not discarded.
+        relatedness = None
+        if result.label in self.policy.reject_on:
+            relatedness = self._relatedness(source, fact)
+            if relatedness < self.policy.min_relatedness:
+                return self._decision(
+                    verdict=REVIEW,
+                    fact=fact,
+                    source=source,
+                    result=result,
+                    reason=(
+                        f"Source and fact appear unrelated "
+                        f"(similarity {relatedness:.2f} < {self.policy.min_relatedness}). "
+                        f"Treating the contradiction signal as unreliable; flagged "
+                        f"rather than rejected."
+                    ),
+                    relatedness=relatedness,
+                )
+
+            return self._decision(
+                verdict=REJECT,
                 fact=fact,
                 source=source,
-                faithfulness=result.score,
-                label=result.label,
-                reason=f"Possible misattribution. {attribution.explanation}",
-                policy_name=self.policy.name,
-                policy_version=self.policy.version,
-                policy_fingerprint=self.policy.fingerprint(),
-                timestamp=self._now(),
-                entailment=getattr(result, "entailment", None),
-                contradiction=getattr(result, "contradiction", None),
-                neutral=getattr(result, "neutral", None),
+                result=result,
+                reason="Fact contradicts its source.",
+                relatedness=relatedness,
             )
 
-        if result.label in self.policy.reject_on:
-            verdict = REJECT
-            reason = "Fact contradicts its source."
-        elif result.label == "faithful" and result.score >= self.policy.store_threshold:
-            verdict = STORE
-            reason = "Fact is supported by its source."
-        else:
-            verdict = REVIEW
-            reason = (
-                "Fact is neither clearly supported nor contradicted. "
-                "Flagged rather than guessed."
+        if result.label == "faithful" and result.score >= self.policy.store_threshold:
+            return self._decision(
+                verdict=STORE,
+                fact=fact,
+                source=source,
+                result=result,
+                reason="Fact is supported by its source.",
             )
 
-        return GateDecision(
-            verdict=verdict,
+        return self._decision(
+            verdict=REVIEW,
             fact=fact,
             source=source,
-            faithfulness=result.score,
-            label=result.label,
-            reason=reason,
-            policy_name=self.policy.name,
-            policy_version=self.policy.version,
-            policy_fingerprint=self.policy.fingerprint(),
-            timestamp=self._now(),
-            entailment=getattr(result, "entailment", None),
-            contradiction=getattr(result, "contradiction", None),
-            neutral=getattr(result, "neutral", None),
+            result=result,
+            reason=(
+                "Fact is neither clearly supported nor contradicted. "
+                "Flagged rather than guessed."
+            ),
         )
 
     def check_many(self, source: str, facts: list[str]) -> list[GateDecision]:
