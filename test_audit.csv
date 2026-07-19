@@ -1,0 +1,4 @@
+verdict,fact,source,faithfulness,label,reason,policy_name,policy_version,policy_fingerprint,timestamp,entailment,contradiction,neutral,relatedness,recorded_at
+STORE,The user is allergic to peanuts.,I am allergic to peanuts.,0.9886,faithful,Fact is supported by its source.,default,1.0,e7403d698e00,2026-07-19T14:31:11.531719+00:00,0.9887,0.0002,0.0111,,2026-07-19T14:31:11.531740+00:00
+REJECT,The user loves eating peanuts.,I am allergic to peanuts.,0.0,contradicts,Fact contradicts its source.,default,1.0,e7403d698e00,2026-07-19T14:31:17.371215+00:00,0.0001,0.999,0.001,0.7865,2026-07-19T14:31:17.371238+00:00
+REVIEW,The user is a lawyer.,My brother is a lawyer.,0.9907,faithful,"Possible misattribution. Source describes my brother, not the speaker. A fact about the user may be a misattribution.",default,1.0,e7403d698e00,2026-07-19T14:31:17.404712+00:00,0.9912,0.0009,0.0079,,2026-07-19T14:31:17.404733+00:00
