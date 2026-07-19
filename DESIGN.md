@@ -164,10 +164,10 @@ worked on a clean machine.
 Memory becomes a first-class use case with its own interface, rather than a loop
 each user rewrites.
 
-- [ ] `MemoryGate` class — three-bucket decision (`STORE` / `REVIEW` / `REJECT`)
-- [ ] `adjudicate()` — overwrite guarding by faithfulness
-- [ ] Adapter interface — works against Supermemory, Mem0, Zep, or a plain list
-- [ ] Reference adapter: Supermemory (the one already validated in the field)
+- [x] `MemoryGate` class — three-bucket decision (`STORE` / `REVIEW` / `REJECT`)
+- [x] `adjudicate()` — overwrite guarding by faithfulness
+- [x] Adapter interface — works against Supermemory, Mem0, Zep, or a plain list
+- [x] Reference adapter: Supermemory (the one already validated in the field)
 
 ### M3 — Scoring correctness
 
@@ -184,6 +184,13 @@ the difference between "works in a demo" and "works on someone else's data."
 - [ ] Expose raw entailment / neutral / contradiction probabilities so callers can
       set their own thresholds instead of inheriting ours.
 - [ ] Regression tests for every case above.
+
+Revising M3 honestly
+The priorities I wrote in DESIGN.md were wrong. Based on measurement rather than assumption:
+
+Attribution (0/3, high confidence, silent bad writes) — most dangerous
+Contradiction over-firing (unsupported → contradicts) — causes silent data loss
+Neutral scoring near zero — real, but less urgent than I claimed
 
 ### M4 — Audit trail
 
