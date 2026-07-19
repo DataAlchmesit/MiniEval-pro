@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Eval Detail - MiniEval Pro</title>
+  <style>
+    body { font-family: sans-serif; background: #0d1117; color: #e0e0e0; padding: 30px; }
+    a { color: #10b981; text-decoration: none; }
+    .card { background: #161b22; border-radius: 12px; padding: 20px; margin: 16px 0; }
+    .label { font-size: 11px; color: #888; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+    .score { font-size: 28px; font-weight: bold; color: #10b981; }
+    .scores { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+    .badge-fail { background: #ef4444; color: white; padding: 4px 14px; border-radius: 20px; font-size: 13px; font-weight: bold; }
+    .badge-pass { background: #10b981; color: white; padding: 4px 14px; border-radius: 20px; font-size: 13px; font-weight: bold; }
+    pre { background: #0d1117; border-radius: 8px; padding: 16px; font-size: 14px; white-space: pre-wrap; word-wrap: break-word; color: #e0e0e0; margin: 0; }
+    h2 { font-size: 26px; margin-bottom: 6px; }
+    .meta { color: #888; font-size: 13px; margin-bottom: 24px; display: flex; justify-content: space-between; align-items: center; }
+  </style>
+</head>
+<body>
+  <a href="/live_feed">← Back to Dashboard</a>
+  <br><br>
+  <h2>Evaluation Details</h2>
+  <div class="card">
+    <div class="meta">
+      <span>{{ eval.timestamp }}</span>
+      {% if eval.passed %}
+        <span class="badge-pass">PASSED</span>
+      {% else %}
+        <span class="badge-fail">FAILED</span>
+      {% endif %}
+    </div>
+    <div class="scores">
+      <div><div class="label">Overall Score</div><div class="score">{{ "%.2f"|format(eval.overall_score) }}</div></div>
+      <div><div class="label">Faithfulness</div><div class="score">{{ "%.2f"|format(eval.faithfulness) }}</div></div>
+      <div><div class="label">Relevance</div><div class="score">{{ "%.2f"|format(eval.relevance) }}</div></div>
+      <div><div class="label">Toxicity</div><div class="score">{{ "%.2f"|format(eval.toxicity) }}</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="label">Question</div>
+    <pre>{{ eval.question }}</pre>
+  </div>
+
+  <div class="card">
+    <div class="label">Answer</div>
+    <pre>{{ eval.answer }}</pre>
+  </div>
+
+  {% if eval.context %}
+  <div class="card">
+    <div class="label">Context</div>
+    <pre>{{ eval.context }}</pre>
+  </div>
+  {% endif %}
+
+  {% if eval.failure_reason %}
+  <div class="card">
+    <div class="label">Failure Reason</div>
+    <pre>{{ eval.failure_reason }}</pre>
+  </div>
+  {% endif %}
+</body>
+</html>

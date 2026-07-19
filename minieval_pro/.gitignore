@@ -1,0 +1,24 @@
+# Virtual environments
+gritvenv/
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Packaging
+*.egg-info/
+dist/
+build/
+
+# Databases
+*.db
+
+# Environment
+.env
+
+# OS
+.DS_Store
+Thumbs.db

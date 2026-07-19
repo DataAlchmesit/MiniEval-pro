@@ -1,0 +1,30 @@
+# Virtual environments
+gritvenv/
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Packaging
+*.egg-info/
+dist/
+build/
+
+# Databases
+*.db
+
+# Environment
+.env
+
+# Editor
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Results / data
+truthfulqa_results_*.csv
