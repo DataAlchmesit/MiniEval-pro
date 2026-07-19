@@ -164,10 +164,10 @@ worked on a clean machine.
 Memory becomes a first-class use case with its own interface, rather than a loop
 each user rewrites.
 
-- [ ] `MemoryGate` class — three-bucket decision (`STORE` / `REVIEW` / `REJECT`)
-- [ ] `adjudicate()` — overwrite guarding by faithfulness
-- [ ] Adapter interface — works against Supermemory, Mem0, Zep, or a plain list
-- [ ] Reference adapter: Supermemory (the one already validated in the field)
+- [x] `MemoryGate` class — three-bucket decision (`STORE` / `REVIEW` / `REJECT`)
+- [x] `adjudicate()` — overwrite guarding by faithfulness
+- [x] Adapter interface — works against Supermemory, Mem0, Zep, or a plain list
+- [x] Reference adapter: Supermemory (the one already validated in the field)
 
 ### M3 — Scoring correctness
 
