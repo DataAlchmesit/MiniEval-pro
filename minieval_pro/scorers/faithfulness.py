@@ -14,9 +14,13 @@ class FaithfulnessResult:
     label: str          # "faithful" | "neutral" | "contradicts"
     confidence: float   # how sure the model is
     explanation: str    # human readable reason
+
+    # Raw NLI probabilities, exposed so callers can set their own
+    # thresholds rather than inheriting ours.
     entailment: float = 0.0
     contradiction: float = 0.0
-    neutral: float = 0.0 
+    neutral: float = 0.0
+
 
 class FaithfulnessScorer:
     """
@@ -28,12 +32,13 @@ class FaithfulnessScorer:
     # 180MB download, 40ms per eval on CPU.
     MODEL_NAME = "cross-encoder/nli-deberta-v3-small"
 
-    def __init__(self):
+    def __init__(self, quiet: bool = False):
         # IMPORTANT: we do NOT load the model here.
         # If we loaded in __init__, every import of this file
         # would trigger a 180MB download. That would feel broken.
         # We load lazily — only when .score() is first called.
         self._model = None
+        self.quiet = quiet
 
     def _load_model(self):
         """Load the model only when first needed."""
@@ -41,7 +46,8 @@ class FaithfulnessScorer:
             return  # already loaded, skip
 
         from transformers import pipeline
-        print("[MiniEval] Loading faithfulness model (~180MB, one-time only)...")
+        if not self.quiet:
+            print("[MiniEval] Loading faithfulness model (~180MB, one-time only)...")
 
         self._model = pipeline(
             task="text-classification",
@@ -51,7 +57,8 @@ class FaithfulnessScorer:
             # top_k=None means: return ALL label scores, not just the top 1
             top_k=None,
         )
-        print("[MiniEval] Faithfulness model ready.")
+        if not self.quiet:
+            print("[MiniEval] Faithfulness model ready.")
 
     def score(
         self,
@@ -130,5 +137,5 @@ class FaithfulnessScorer:
             explanation=explanation,
             entailment=round(entailment, 4),
             contradiction=round(contradiction, 4),
-            neutral=round(neutral, 4)
+            neutral=round(neutral, 4),
         )

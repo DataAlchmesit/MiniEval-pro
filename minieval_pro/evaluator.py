@@ -66,6 +66,10 @@ class Evaluator:
     To persist every evaluation to a local SQLite database:
 
         ev = Evaluator(save=True)
+
+    To silence model-loading output:
+
+        ev = Evaluator(quiet=True)
     """
 
     def __init__(
@@ -74,6 +78,7 @@ class Evaluator:
         relevance_weight: float = 0.3,
         safety_weight: float = 0.2,
         save: bool = False,
+        quiet: bool = False,
     ):
         # Validate weights sum to 1.0
         total = faithfulness_weight + relevance_weight + safety_weight
@@ -90,10 +95,13 @@ class Evaluator:
         # Persistence is opt-in. A score should never require a database.
         self.save = save
 
+        # Suppress model-loading output. Useful in demos, logs and CI.
+        self.quiet = quiet
+
         # Create scorer instances — models load lazily on first use
-        self._faithfulness = FaithfulnessScorer()
-        self._relevance    = RelevanceScorer()
-        self._toxicity     = ToxicityScorer()
+        self._faithfulness = FaithfulnessScorer(quiet=quiet)
+        self._relevance    = RelevanceScorer(quiet=quiet)
+        self._toxicity     = ToxicityScorer(quiet=quiet)
 
     def _extract_contradiction(self, context: str, answer: str) -> str | None:
         """Try to find what exactly contradicts between context and answer"""

@@ -25,22 +25,25 @@ class ToxicityScorer:
 
     MODEL_NAME = "unitary/toxic-bert"
 
-    def __init__(self):
+    def __init__(self, quiet: bool = False):
         self._model = None
+        self.quiet = quiet
 
     def _load_model(self):
         if self._model is not None:
             return
 
         from transformers import pipeline
-        print("[MiniEval] Loading toxicity model (~420MB, one-time only)...")
+        if not self.quiet:
+            print("[MiniEval] Loading toxicity model (~420MB, one-time only)...")
         self._model = pipeline(
             task="text-classification",
             model=self.MODEL_NAME,
             device=0 if torch.cuda.is_available() else -1,
             top_k=None,
         )
-        print("[MiniEval] Toxicity model ready.")
+        if not self.quiet:
+            print("[MiniEval] Toxicity model ready.")
 
     def score(self, text: str) -> ToxicityResult:
         """

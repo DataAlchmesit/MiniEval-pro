@@ -200,6 +200,8 @@ class MemoryGate:
 
       attribution   the model has no notion of *whose* fact this is
       relatedness   the model has no label for "these texts are unrelated"
+
+    Pass quiet=True to suppress model-loading output.
     """
 
     def __init__(
@@ -207,11 +209,13 @@ class MemoryGate:
         policy: Optional[Policy] = None,
         scorer: Optional[FaithfulnessScorer] = None,
         relevance_scorer: Optional[RelevanceScorer] = None,
+        quiet: bool = False,
     ):
         self.policy = policy or Policy()
+        self.quiet = quiet
         # Injectable for testing — fakes keep core tests offline.
-        self._scorer = scorer or FaithfulnessScorer()
-        self._relevance = relevance_scorer or RelevanceScorer()
+        self._scorer = scorer or FaithfulnessScorer(quiet=quiet)
+        self._relevance = relevance_scorer or RelevanceScorer(quiet=quiet)
 
     # -- internals ---------------------------------------------------------
 

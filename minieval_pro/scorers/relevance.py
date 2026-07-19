@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from sentence_transformers import SentenceTransformer
 
 
-
 @dataclass
 class RelevanceResult:
     score: float        # 0.0 to 1.0 — higher means more relevant
@@ -21,17 +20,20 @@ class RelevanceScorer:
 
     MODEL_NAME = "all-MiniLM-L6-v2"
 
-    def __init__(self):
+    def __init__(self, quiet: bool = False):
         self._model = None  # lazy load again
+        self.quiet = quiet
 
     def _load_model(self):
         if self._model is not None:
             return
 
         from sentence_transformers import SentenceTransformer
-        print("[MiniEval] Loading relevance model (~80MB, one-time only)...")
+        if not self.quiet:
+            print("[MiniEval] Loading relevance model (~80MB, one-time only)...")
         self._model = SentenceTransformer(self.MODEL_NAME)
-        print("[MiniEval] Relevance model ready.")
+        if not self.quiet:
+            print("[MiniEval] Relevance model ready.")
 
     def score(
         self,
