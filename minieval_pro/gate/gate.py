@@ -27,6 +27,7 @@ import hashlib
 import json
 
 from ..scorers.faithfulness import FaithfulnessScorer, FaithfulnessResult
+from ..scorers.attribution import check_attribution
 
 
 # --------------------------------------------------------------------------
@@ -210,6 +211,27 @@ class MemoryGate:
         information; flagging is the honest third option.
         """
         result = self._score(source, fact)
+
+        # Attribution pre-check. The NLI model has no notion of whose fact
+        # this is: "my brother is a lawyer" entails "the user is a lawyer"
+        # at 0.99. Downgrade to REVIEW rather than storing a misattribution.
+        attribution = check_attribution(source, fact)
+        if attribution.third_party and attribution.confidence == "high":
+            return GateDecision(
+                verdict=REVIEW,
+                fact=fact,
+                source=source,
+                faithfulness=result.score,
+                label=result.label,
+                reason=f"Possible misattribution. {attribution.explanation}",
+                policy_name=self.policy.name,
+                policy_version=self.policy.version,
+                policy_fingerprint=self.policy.fingerprint(),
+                timestamp=self._now(),
+                entailment=getattr(result, "entailment", None),
+                contradiction=getattr(result, "contradiction", None),
+                neutral=getattr(result, "neutral", None),
+            )
 
         if result.label in self.policy.reject_on:
             verdict = REJECT
