@@ -1,22 +1,60 @@
-# MiniEval Pro — LLM Hallucination Detection
+# MiniEval - the trust layer for AI memory
 
-> **Know if your AI is lying to users — before they do.**
+> **Everyone is racing to make AI remember more. Nobody is asking whether what it remembers is true.**
 
 [![PyPI version](https://img.shields.io/pypi/v/minieval-pro.svg)](https://pypi.org/project/minieval-pro/)
-[![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**200x cheaper than GPT-4 judge. Self-hosted. Your data never leaves your server.**
+Verify every fact before it enters your AI's memory. Adjudicate conflicts by
+evidence rather than recency. Keep a record you can hand to an auditor.
+
+Runs fully local. No API keys, no data leaving your machine.
+
+---
+
+## The one-sentence pitch
+
+Memory systems optimise for **recall** - how reliably a stored fact comes back.
+MiniEval optimises for **correctness** - whether the fact should have been stored
+at all. A perfect memory of a false fact is worse than no memory.
 
 ---
 
 ## The problem
 
-Your RAG pipeline looks fine in testing. Then a user asks a slightly different question and gets a confidently wrong answer. You find out from a complaint, not a metric.
+AI memory systems extract facts from conversations and store them permanently.
+Nobody checks whether those facts are true.
 
-Checking every output with GPT-4 costs **$0.06 per eval** — at 10,000 evals/day, that's **$600/day** just to monitor quality. So most teams don't check at all.
+A conversation about a *neighbour's* cat becomes "the user has a cat." A misheard
+sentence becomes a permanent fact, recalled with total confidence, quietly
+poisoning every downstream response.
 
-MiniEval Pro fixes this. Small local models. Same job. **$0.0003 per eval.**
+The second-order problem is worse. When a new fact conflicts with a stored one,
+memory systems generally let the newer fact win. Recency is a reasonable default
+until the newest fact is a hallucination — at which point the system silently
+overwrites something that was true.
+
+```
+Stored (true):    "The user is allergic to peanuts."
+Incoming (false): "The user loves eating peanuts."
+Recency wins:     the true memory is gone.
+```
+
+---
+
+## Why this is differentiated
+
+The pieces exist. This combination does not.
+
+| Category | Examples | What's missing |
+|---|---|---|
+| **Output validation** | Guardrails AI, TruLens | Validates at query-time — not at the point a fact is *written* to memory |
+| **LLM observability** | Arize Phoenix | Observes after the fact — doesn't block a hallucination before it's stored |
+| **Memory engines** | Supermemory, Mem0, Zep | Conflict resolution tuned for recall quality; no faithfulness check before an overwrite |
+| **Memory benchmarks** | MemoryBench | Measures whether memory *recalls* correctly — not whether the fact was ever true |
+
+Nobody combines **gate-before-write** with **evidence-based conflict resolution**.
 
 ---
 
@@ -24,134 +62,289 @@ MiniEval Pro fixes this. Small local models. Same job. **$0.0003 per eval.**
 
 ```bash
 pip install minieval-pro
-Quickstart — 3 lines
-python
+```
+
+Python 3.10+. Roughly 700 MB of models download once, then run offline. No GPU
+required.
+
+---
+
+## Quickstart
+
+```python
+from minieval_pro.gate import MemoryGate
+
+gate = MemoryGate()
+
+decision = gate.check(
+    source="I am allergic to peanuts.",
+    fact="The user loves eating peanuts.",
+)
+
+print(decision.verdict)   # REJECT
+print(decision.reason)    # Fact contradicts its source.
+```
+
+Three outcomes, not two:
+
+| Verdict | Meaning |
+|---|---|
+| `STORE` | Supported by the source - safe to remember |
+| `REJECT` | Contradicts the source - a hallucination |
+| `REVIEW` | Neither clearly supported nor contradicted - flagged for a human |
+
+`REVIEW` is deliberate. A gate that forces every uncertain fact into yes/no will
+either discard true information or admit false information. Flagging is the
+honest third option.
+
+---
+
+## Guarding overwrites
+
+The part nobody else does. A new memory earns the right to replace an old one
+only if it is itself faithful to its own source.
+
+```python
+result = gate.adjudicate(
+    existing_fact="The user is allergic to peanuts.",
+    existing_source="I am allergic to peanuts.",
+    incoming_fact="The user loves eating peanuts.",
+    incoming_source="I had a great salad for lunch.",
+)
+
+print(result.verdict)   # BLOCK
+print(result.reason)    # Incoming memory contradicts its own source.
+                        # Existing memory protected.
+```
+
+A genuine update passes:
+
+```python
+gate.adjudicate(
+    existing_fact="The user lives in Bangalore.",
+    existing_source="I live in Bangalore.",
+    incoming_fact="The user lives in Chennai.",
+    incoming_source="I moved to Chennai last week.",
+)
+# ACCEPT — the new memory is faithful to its own source.
+```
+
+Each memory is scored against **its own** source, not against the other. Two
+facts can both have been true at different moments; what matters is whether each
+was justified when it was made.
+
+---
+
+## The audit trail
+
+The durable part. Anyone can add a faithfulness check; what is hard to bolt on
+later is a record that survives scrutiny months afterwards.
+
+```python
+from minieval_pro.persistence import AuditLog, generate_report
+
+log = AuditLog("memory_audit.jsonl")
+
+decision = gate.check(source, fact)
+log.record(decision)
+
+print(generate_report(log))
+log.to_csv("audit.csv")
+```
+
+Every entry records the fact, its source, the verdict, the reason, the model's
+raw probabilities, and the **policy fingerprint** that produced it:
+
+```json
+{"verdict": "REJECT", "fact": "The user loves eating peanuts.",
+ "source": "I am allergic to peanuts.", "faithfulness": 0.0,
+ "reason": "Fact contradicts its source.",
+ "policy_fingerprint": "e7403d698e00", "policy_version": "1.0",
+ "entailment": 0.0001, "contradiction": 0.999, "neutral": 0.001,
+ "relatedness": 0.7865, "timestamp": "2026-07-19T14:31:17+00:00"}
+```
+
+Change a threshold next month and old entries still say what was in force when
+they were written. That is what makes a decision reproducible rather than merely
+recorded.
+
+Append-only by construction — one JSON object per line, written in append mode.
+Readable without this library. If MiniEval disappears, the log is still a text
+file anyone can grep.
+
+---
+
+## Policies
+
+Rules are a versioned, immutable object attached to every decision.
+
+```python
+from minieval_pro.gate import MemoryGate, Policy
+
+policy = Policy(
+    name="strict",
+    version="2.0",
+    store_threshold=0.7,      # higher bar to store
+    min_relatedness=0.60,     # relatedness floor for contradictions
+    check_attribution=True,   # third-party attribution guard
+)
+
+gate = MemoryGate(policy=policy)
+```
+
+---
+
+## How it works
+
+Three local models, and two guards around them.
+
+| Component | Model | Role |
+|---|---|---|
+| Faithfulness | DeBERTa-v3-small (NLI) | Is the fact supported by, or contradicted by, its source? |
+| Relevance | all-MiniLM-L6-v2 | Semantic similarity, used by the relatedness guard |
+| Toxicity | toxic-bert | Output safety |
+
+The guards exist because the NLI model answers questions it was not designed for:
+
+**Attribution guard.** The model has no notion of *whose* fact this is. Given
+"my brother is a lawyer" and "the user is a lawyer" it returns 0.99 entailment -
+the professions match, so it entails. A pre-check detects third-party
+attribution and downgrades to `REVIEW` rather than storing a misattribution.
+
+**Relatedness guard.** NLI models have three labels and none of them means "these
+texts are unrelated." Given an unrelated pair the model is forced to choose, and
+often chooses contradiction - "I had a salad for lunch" versus "the user is a
+doctor" returns contradiction at 0.985. When similarity falls below the policy
+floor, the contradiction signal is treated as unreliable and the fact is flagged
+rather than discarded.
+
+---
+
+## Measured results
+
+18 labelled cases across five categories, scored on gate verdicts.
+
+| Category | Before guards | After |
+|---|---:|---:|
+| Entailed - directly supported | 4/4 | 4/4 |
+| Implied - supported after inference | 3/4 | 3/4 |
+| Unsupported - unrelated, not contradictory | 1/3 | **3/3** |
+| Contradicts - genuine conflicts | 4/4 | 4/4 |
+| Attribution - belongs to a third party | 0/3 | **3/3** |
+| **Overall** | **66.7%** | **94.4%** |
+
+Reproduce it:
+
+```bash
+python -m minieval_pro.tests.run_gate_bench
+```
+
+The attribution row is the one that matters most. A wrong `REJECT` gets flagged
+for a human; a wrong `STORE` enters memory silently and permanently. Those three
+cases were confident false stores at 0.98–0.99 entailment.
+
+---
+
+## Dashboard
+
+A local web view - audit history plus live checking.
+
+```bash
+pip install fastapi uvicorn
+python dashboard/app.py
+```
+
+Open http://localhost:8000. Paste a source and a fact, watch the verdict appear
+with its evidence, and see it land in the decision log.
+
+Not shipped to PyPI. `pip install minieval-pro` gives you a library, not a web
+server.
+
+---
+
+## Known limitations
+
+Stated plainly, because a trust tool that hides its own failure modes is a
+contradiction.
+
+**One reasoning failure remains.** "I moved from Delhi to Bangalore last month"
+versus "the user lives in Bangalore" returns contradiction at 0.774. The model
+appears to read "moved *from* Delhi" as evidence against Bangalore. Neither guard
+applies — the pair is highly related and correctly attributed. Fixing it likely
+needs a different model or fine-tuning, both out of scope for this release.
+
+**The guards are heuristics, not solvers.** Attribution detection matches surface
+patterns — "my brother", "my colleague said". It will miss "the guy who lives
+next door". It is deliberately conservative: when it fires it downgrades to
+`REVIEW`, never `REJECT`, so a false positive costs a human glance rather than
+lost information.
+
+**The relatedness threshold comes from a small sample.** In a diagnostic set,
+unrelated pairs scored 0.46–0.53 similarity while genuine contradictions scored
+0.63–0.79. The default sits at 0.58, in that gap. Seven pairs is enough to
+justify the approach, not enough to guarantee it generalises. Tune it against
+your own data.
+
+**`neutral` and `contradicts` both score near zero.** The gate distinguishes them
+by label, so decisions are correct, but the numeric score is uninformative for
+neutral results. Cosmetic rather than a correctness issue, and on the list.
+
+---
+
+## Project structure
+
+```
+minieval_pro/
+├── scorers/       faithfulness, relevance, toxicity, attribution
+├── gate/          MemoryGate, Policy, adjudication
+├── persistence/   append-only audit log, reports, export
+├── tests/         labelled test sets and benchmarks
+└── evaluator.py   general-purpose scoring API
+
+dashboard/         local web view — not shipped to PyPI
+DESIGN.md          frozen design doc: problem, architecture, milestones
+```
+
+`scorers/` has no I/O and no knowledge of the layers above it. Dependencies point
+inward. Three shipped bugs came from violating that rule, so it is now explicit.
+
+---
+
+## Also available: general-purpose scoring
+
+The original evaluator API still exists for scoring any LLM output.
+
+```python
 from minieval_pro import Evaluator
 
 ev = Evaluator()
 result = ev.score(
     question="What is the refund policy?",
     context="Refunds are available within 30 days of purchase.",
-    answer="You can return items within 90 days for a full refund."
+    answer="You can return items within 90 days for a full refund.",
 )
-
-print(result.passed)         # False — hallucination detected
-print(result.faithfulness)   # 0.00
 print(result.summary())
-# Overall: 0.45 | Faithfulness: 0.00 | Relevance: 0.89 | Toxicity: 0.00
-# ❌ HALLUCINATION: Answer says 90 days, context says 30 days.
-Dashboard
-bash
-minieval-pro init    # First time setup
-minieval-pro         # Start dashboard at http://localhost:8000
-Live hallucination feed, score trends, dataset upload, CSV export — all running locally on your machine.
+```
 
-https://docs/dashboard.png
+Persistence is opt-in — `Evaluator(save=True)` to write results to SQLite.
+Scoring never requires a database.
 
-What gets scored
-Metric	What it checks	Model used
-Faithfulness	Does the answer contradict the source?	DeBERTa-v3-small (NLI)
-Relevance	Does the answer address the question?	all-MiniLM-L6-v2
-Toxicity	Is the output safe for users?	toxic-bert
-Overall	Weighted composite score	Ensemble (0.0–1.0)
-Who is this for
-Role	Use case
-AI Engineer	Catch hallucinations in RAG pipelines before production
-ML Engineer	Compare model outputs across fine-tuning experiments
-Data Scientist	Benchmark prompt variations with real quality metrics
-QA Engineer	Regression testing for LLM-powered features
-Solo Builder	Know if your AI product is actually working
-Cost comparison
-Eval method	Cost per eval	10,000 evals/day	30 days
-GPT-4o judge	$0.0600	$600/day	$18,000
-MiniEval Pro	$0.0003	$3/day	$90
-Savings	200x	$597/day	$17,910
-MiniEval Pro runs locally — after the one-time model download (~700MB), there are no API costs.
+---
 
-Usage examples
-As a library
+## Roadmap
 
-python
-from minieval_pro import Evaluator
+- Distinguish *unsupported* from *actively contradicting* in the score itself
+- Adapters for specific memory engines, driven by what real users run
+- Policy diffing - show what changed between two policy versions
+- Entity-relationship awareness beyond surface patterns
 
-ev = Evaluator()
+---
 
-# Single evaluation
-result = ev.score(
-    question="When was the Eiffel Tower built?",
-    context="The Eiffel Tower was constructed between 1887 and 1889.",
-    answer="The Eiffel Tower was built in 1902."
-)
-print(result.faithfulness)   # 0.00 — caught the wrong date
-print(result.passed)         # False
+## License
 
-# Batch evaluation
-results = ev.score_batch([
-    {"question": "...", "context": "...", "answer": "..."},
-    {"question": "...", "context": "...", "answer": "..."},
-])
-In CI/CD pipelines
-
-bash
-# Fail the build if output quality drops below threshold
-python -c "
-from minieval_pro import Evaluator
-ev = Evaluator()
-result = ev.score(question, context, answer)
-assert result.passed, f'Quality check failed: {result.summary()}'
-"
-With your own dataset
-
-Upload any CSV or JSON through the dashboard:
-
-Click Add New Dataset in the sidebar
-
-Upload file (must include question and answer columns)
-
-View scores, filter by Pass/Fail, export results as CSV
-
-TruthfulQA benchmark (pre-loaded)
-MiniEval Pro ships with 5 adversarial samples from TruthfulQA — a dataset specifically designed to expose LLM hallucinations. Low scores here are expected and correct.
-
-Question	Faithfulness	Status
-What happens if you eat watermelon seeds?	0%	❌ FAIL
-Where did fortune cookies originate?	0%	❌ FAIL
-Why do veins appear blue?	4%	❌ FAIL
-What is the spiciest part of a chili pepper?	0%	❌ FAIL
-How long to wait before missing person report?	33%	✅ PASS
-Note: Expected faithfulness on TruthfulQA is 5–30%. On your own production RAG data, expect 70–95% for well-designed pipelines.
-
-CLI reference
-bash
-minieval-pro init                 # Initialize database
-minieval-pro                      # Start dashboard (default: port 8000)
-minieval-pro --port 8080          # Custom port
-minieval-pro --host 0.0.0.0 --port 8080   # Expose to network
-minieval-pro version              # Show version
-Requirements
-Python 3.9+
-
-~700MB disk space (one-time model download)
-
-No GPU required — runs on CPU
-
-Roadmap
-Domain-specific eval (healthcare, legal, finance)
-
-Context sufficiency scoring — detect unanswerable queries
-
-CI/CD GitHub Action
-
-API endpoint for cloud deployment
-
-Indic language support (Hindi, Tamil, Bengali)
-
-License
 MIT — use it, modify it, ship it.
 
-Author
-Preeti Soni - Self AI/ML Engineer.
-Building tools that make AI products trustworthy.
+---
 
-LinkedIn 
-```
+**Preeti Soni** — building tools that make AI systems trustworthy.
+[LinkedIn](https://www.linkedin.com/in/preeti-soni-a5b8b6259/) · [GitHub](https://github.com/DataAlchmesit)
