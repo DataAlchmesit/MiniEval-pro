@@ -185,6 +185,13 @@ the difference between "works in a demo" and "works on someone else's data."
       set their own thresholds instead of inheriting ours.
 - [ ] Regression tests for every case above.
 
+Revising M3 honestly
+The priorities I wrote in DESIGN.md were wrong. Based on measurement rather than assumption:
+
+Attribution (0/3, high confidence, silent bad writes) — most dangerous
+Contradiction over-firing (unsupported → contradicts) — causes silent data loss
+Neutral scoring near zero — real, but less urgent than I claimed
+
 ### M4 — Audit trail
 
 The durable differentiator. Built as a product surface, not a debug log.
