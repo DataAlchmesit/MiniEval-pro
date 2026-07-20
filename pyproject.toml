@@ -4,28 +4,25 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "minieval-pro"
-version = "1.0.0"
-requires-python = ">=3.9"
-description = "LLM Evaluation Platform - Detect hallucinations in RAG pipelines. 200x cheaper than GPT-4 judge."
+version = "1.1.0"
+requires-python = ">=3.10"
+description = "The trust layer for AI memory — verify every fact before it's stored, adjudicate conflicts by evidence, keep an auditable record."
 authors = [{ name = "Preeti Soni", email = "sonipreeti2528@gmail.com" }]
 license = { text = "MIT" }
 readme = "README.md"
+keywords = ["llm", "hallucination", "ai-memory", "nli", "evaluation", "audit"]
 
 dependencies = [
-    "fastapi>=0.100.0",
-    "uvicorn>=0.44.0",
-    "jinja2>=3.0.0",
-    "python-multipart>=0.0.6",
-    "pandas>=2.0.0",
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "sentence-transformers>=2.2.0",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0"]
-
-[project.scripts]
-minieval-pro = "minieval_pro.cli:main"
+dashboard = ["fastapi>=0.100.0", "uvicorn>=0.24.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["minieval_pro*"]
-exclude = ["gritvenv*", "tests*", "dist*", "build*", "*.egg-info*"]
+exclude = ["gritvenv*", "dashboard*", "data*", "dist*", "build*", "*.egg-info*"]

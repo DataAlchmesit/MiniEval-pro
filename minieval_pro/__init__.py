@@ -10,7 +10,7 @@ from .scorers.toxicity import ToxicityScorer, ToxicityResult
 # Import from evaluator
 from .evaluator import Evaluator, EvalResult
 
-__version__ = "0.1.0"
+__version__ = "1.1.0"
 __all__ = [
     # Main API
     "Evaluator",
