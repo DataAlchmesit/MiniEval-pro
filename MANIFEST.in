@@ -1,0 +1,20 @@
+# Exclude the virtualenv, build artifacts and local data
+prune gritvenv
+prune testenv
+prune dist
+prune build
+prune data
+prune dashboard
+prune .vscode
+prune .claude
+global-exclude *.pyc
+global-exclude __pycache__
+global-exclude *.db
+global-exclude *.jsonl
+global-exclude *.egg-info
+
+# Include the things that should ship
+include README.md
+include LICENSE
+include CHANGELOG.md
+include DESIGN.md
