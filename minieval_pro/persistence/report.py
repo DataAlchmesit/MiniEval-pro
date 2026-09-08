@@ -15,6 +15,42 @@ Deliberately plain. Text by default, markdown on request. No HTML, no
 templates, no charting library — presentation for the web belongs in the
 delivery layer, not here. A report that needs a browser to be read is not
 much use in an email thread or a ticket.
+
+Fixed 2026 — adjudicate() entries were invisible or malformed in reports:
+
+    The log holds two shapes of decision: GateDecision (from check()) and
+    AdjudicationDecision (from adjudicate()). This module was written
+    assuming every entry was a GateDecision. Confirmed via
+    test_report_adjudicate_gap.py:
+
+    1. BLOCK (adjudicate's reject-equivalent) was never counted in the
+       "Blocked" section, which filtered on the literal string "REJECT".
+       An overwrite that was correctly blocked would not appear in the
+       one section meant to explain what was blocked and why.
+
+    2. AdjudicationDecision has no 'fact' or 'source' keys — it has
+       existing_fact/incoming_fact instead. Entries rendered with a real
+       reason but blank fact and source lines, which reads worse than a
+       missing entry: it looks like a real record with the identifying
+       detail stripped out.
+
+    3. adjudicate()'s REVIEW reason ("Incoming memory is not clearly
+       faithful...") doesn't match the check()-specific string checks in
+       the flag-reason categoriser, so it fell into "Neither supported
+       nor contradicted" — a check()-shaped label describing something
+       check() never said.
+
+    Fixed by normalising each entry to the fields the renderers already
+    expect, once, before analysis — not by scattering shape checks
+    through every render function.
+
+    One thing this fix does NOT solve, because the data doesn't exist:
+    AdjudicationDecision does not persist existing_source or
+    incoming_source — only the facts and their faithfulness scores. A
+    normalised adjudicate() entry shows both facts being compared, not
+    what each was originally checked against. That's a real, separate
+    gap in what gets persisted, not something a report-layer fix can
+    paper over.
 """
 
 from __future__ import annotations
@@ -33,6 +69,69 @@ def _rule(char: str = "-", width: int = 74) -> str:
 def _truncate(text: str, limit: int = 60) -> str:
     text = (text or "").replace("\n", " ").strip()
     return text if len(text) <= limit else text[: limit - 1] + "\u2026"
+
+
+# --------------------------------------------------------------------------
+# Normalisation — make every entry look like a GateDecision for display
+# purposes, regardless of which decision type actually produced it.
+# --------------------------------------------------------------------------
+
+# Verdicts that mean the same thing for reporting purposes, even though
+# check() and adjudicate() spell them differently.
+_VERDICT_CLASS = {
+    "STORE": "STORE",
+    "ACCEPT": "STORE",
+    "REJECT": "REJECT",
+    "BLOCK": "REJECT",
+    "REVIEW": "REVIEW",
+}
+
+def _normalise_entry(entry: dict) -> dict:
+    """
+    Return a copy of `entry` with 'fact', 'source', and 'verdict' filled in
+    using GateDecision-shaped names.
+    
+    If `incoming_source` and `existing_source` are present (from updated AdjudicationDecision),
+    it formats `source` to display full lineage:
+    "incoming: '{incoming_source}' | existing source: '{existing_source}'"
+    
+    If raw sources are absent (older logs), it safely falls back to:
+    "(existing memory: {existing_fact})"
+    """
+    if "incoming_fact" not in entry:
+        # Already GateDecision-shaped. Leave as-is.
+        return entry
+
+    normalised = dict(entry)
+    normalised["fact"] = entry.get("incoming_fact", "")
+    
+    # Check if raw sources were captured by AdjudicationDecision
+    inc_src = entry.get("incoming_source")
+    ext_src = entry.get("existing_source")
+    ext_fact = entry.get("existing_fact", "")
+
+    if inc_src or ext_src:
+        parts = []
+        if inc_src:
+            parts.append(f"incoming: '{inc_src}'")
+        if ext_src:
+            parts.append(f"existing source: '{ext_src}'")
+        elif ext_fact:
+            parts.append(f"existing memory: '{ext_fact}'")
+        normalised["source"] = " | ".join(parts)
+    else:
+        # Legacy fallback when raw sources were omitted
+        normalised["source"] = f"(existing memory: {ext_fact})"
+
+    normalised["raw_verdict"] = entry.get("verdict")
+    normalised["verdict"] = _VERDICT_CLASS.get(
+        entry.get("verdict"), entry.get("verdict")
+    )
+
+    if entry.get("incoming_label") == "contradicts" and "contradiction" not in entry:
+        normalised["contradiction"] = entry.get("incoming_faithfulness")
+
+    return normalised
 
 
 def generate_report(
@@ -57,7 +156,7 @@ def generate_report(
     elif isinstance(log, (str, Path)):
         log = AuditLog(log)
 
-    entries = log.entries()
+    entries = [_normalise_entry(e) for e in log.entries()]
     stats = log.summary()
 
     if fmt == "markdown":
@@ -90,6 +189,12 @@ def _analyse(entries: list[dict]) -> dict:
             flag_reasons["Possible misattribution"] += 1
         elif "unrelated" in reason.lower():
             flag_reasons["Source and fact unrelated"] += 1
+        elif "overwrite" in reason.lower() or "incoming_fact" in e:
+            # adjudicate()'s REVIEW reason ("not confident enough to
+            # overwrite") doesn't fit either check()-specific bucket above.
+            # Also catch by shape (incoming_fact present) in case reason
+            # text ever changes, so this doesn't silently regress.
+            flag_reasons["Overwrite not confident enough"] += 1
         else:
             flag_reasons["Neither supported nor contradicted"] += 1
 

@@ -3,7 +3,7 @@ Run with: python tests/test_all.py
 First run downloads models (~700MB total, one time only).
 After that, each eval takes 1-3 seconds on CPU.
 """
-from minieval import Evaluator
+from minieval_pro import Evaluator
 
 ev = Evaluator()
 

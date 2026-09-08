@@ -28,6 +28,22 @@ pandas. Binary or proprietary formats make an audit trail hostage to its tool.
 Policy captured per entry. Each line records the policy name, version and
 fingerprint that produced the decision. Change a threshold next month and the
 old entries still say what was in force when they were written.
+
+Fixed 2026 — summary() undercounted adjudicate() entries:
+
+    stored/rejected/review only read the literal "STORE"/"REJECT"/"REVIEW"
+    keys from by_verdict. adjudicate()'s ACCEPT and BLOCK verdicts were
+    never included, so store_rate + reject_rate + review_rate silently
+    failed to sum to 100% whenever the log contained any adjudicate()
+    entries — the BLOCK/ACCEPT count existed in by_verdict but was
+    invisible in the aggregate totals. Confirmed via a 4-entry test log
+    (2 check(), 2 adjudicate()): rejected showed 1 instead of 2, and the
+    missing BLOCK entry didn't appear in any of the three rate percentages.
+
+    Fixed by folding ACCEPT into stored and BLOCK into rejected for these
+    three aggregate counts only. by_verdict itself is untouched and still
+    reports the real, distinct verdict strings — this only affects the
+    three summary rates and totals.
 """
 
 from __future__ import annotations
@@ -215,8 +231,18 @@ class AuditLog:
             )
 
         total = len(entries)
-        stored = by_verdict.get("STORE", 0)
-        rejected = by_verdict.get("REJECT", 0)
+        # ACCEPT (adjudicate's approve-overwrite) and BLOCK (adjudicate's
+        # protect-existing) mean the same thing as STORE and REJECT for
+        # these aggregate rates, but were previously invisible here — only
+        # the literal "STORE"/"REJECT" keys were read from by_verdict. That
+        # meant store_rate + reject_rate + review_rate silently failed to
+        # sum to 100% whenever the log contained any adjudicate() entries,
+        # since ACCEPT/BLOCK counts existed in by_verdict but were never
+        # pulled into these totals. by_verdict itself is left untouched
+        # below (it still reports the real, distinct verdict strings) —
+        # only these three aggregate counts are normalised.
+        stored = by_verdict.get("STORE", 0) + by_verdict.get("ACCEPT", 0)
+        rejected = by_verdict.get("REJECT", 0) + by_verdict.get("BLOCK", 0)
         review = by_verdict.get("REVIEW", 0)
 
         return {

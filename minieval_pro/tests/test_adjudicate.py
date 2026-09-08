@@ -198,18 +198,9 @@ CASES = [
 
 ]
 
-
 def test_existing_timestamp_passthrough():
     """
     Confirms existing_timestamp is optional and passes through correctly.
-
-    Two checks:
-      1. When omitted, the decision's existing_timestamp is None — old
-         callers and the CASES above (none of which pass it) still work
-         unchanged.
-      2. When supplied, it comes back on the decision exactly as given,
-         so an auditor reading one AdjudicationDecision can see both when
-         the overwrite happened and how old the replaced memory was.
     """
     gate = MemoryGate(quiet=True)
 
@@ -241,8 +232,9 @@ def test_existing_timestamp_passthrough():
     print(f"  [{'PASS' if with_ok else 'FAIL'}] supplied -> unchanged "
           f"(got: {decision_with.existing_timestamp!r})")
 
-    return without_ok and with_ok
-
+    # Replace 'return without_ok and with_ok' with explicit asserts:
+    assert without_ok, "existing_timestamp was expected to be None when omitted"
+    assert with_ok, f"existing_timestamp was expected to be {stamp!r}"
 
 def run_suite():
     gate = MemoryGate(quiet=True)
