@@ -166,10 +166,15 @@ class AdjudicationDecision:
     # see both "when this overwrite happened" and "how old was the memory
     # that got replaced" without cross-referencing the log by fact text.
     existing_timestamp: Optional[str] = None
-    # Optional raw sources that produced the existing and incoming facts.
-    # Enables full end-to-end evidence lineage reporting in audit logs.
-    incoming_source: Optional[str] = None
+    # The original source text each fact was scored against. Optional and
+    # defaults to None for the same backward-compatibility reason as
+    # existing_timestamp. Without these, a report reading one
+    # AdjudicationDecision can show the two competing facts but not what
+    # either was actually checked against — a real gap found while fixing
+    # the audit report, since the report has no way to show data the
+    # decision itself never carried.
     existing_source: Optional[str] = None
+    incoming_source: Optional[str] = None
 
     @property
     def overwrite_allowed(self) -> bool:
@@ -199,8 +204,8 @@ class MemoryGate:
 
     The gate makes two kinds of decision:
 
-      check()        should this candidate fact be stored at all?
-      adjudicate()   may this incoming fact overwrite an existing memory?
+      check()       should this candidate fact be stored at all?
+      adjudicate()  may this incoming fact overwrite an existing memory?
 
     Both attach the policy in force to the decision, so past decisions stay
     reproducible after the policy changes.
@@ -383,10 +388,6 @@ class MemoryGate:
         cross-reference the log by fact text. If omitted, it's simply None —
         current behavior for callers that don't pass it is unchanged.
 
-        incoming_source and existing_source are saved directly onto the resulting
-        decision object so audit logs and compliance reports preserve full
-        evidential lineage without extra lookups.
-
         Known limitation: this does not compare existing_faithfulness against
         incoming_faithfulness. An incoming fact only needs to clear its own
         threshold independently — there is no check that it's at least as
@@ -444,6 +445,6 @@ class MemoryGate:
             policy_fingerprint=self.policy.fingerprint(),
             timestamp=self._now(),
             existing_timestamp=existing_timestamp,
-            incoming_source=incoming_source,
             existing_source=existing_source,
+            incoming_source=incoming_source,
         )
