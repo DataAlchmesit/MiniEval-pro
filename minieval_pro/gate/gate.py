@@ -28,7 +28,7 @@ import json
 
 from ..scorers.faithfulness import FaithfulnessScorer, FaithfulnessResult
 from ..scorers.relevance import RelevanceScorer
-from ..scorers.attribution import check_attribution
+from ..scorers.attribution import check_attribution, split_sentences
 
 
 # --------------------------------------------------------------------------
@@ -245,6 +245,52 @@ class MemoryGate:
         """Semantic similarity between a source and a candidate fact."""
         return self._relevance.score(source, fact).score
 
+    def _narrow_source_for_fact(self, source: str, fact: str) -> str:
+        """
+        Return the single sentence of `source` most relevant to `fact`.
+
+        Used by both the attribution guard and the relatedness guard —
+        not by the main faithfulness scoring, which still uses the full
+        source unchanged, since broader context can legitimately matter
+        for entailment reasoning.
+
+        Why this exists: both guards were originally written assuming a
+        source is about one thing. When a source is a whole multi-topic
+        episode (the shape Mem0's real extraction pipeline produces —
+        confirmed via their extracted_memories, which carries no per-fact
+        source span), each guard fails the same way for the same reason:
+
+          - Attribution: a third-party mention ANYWHERE in the episode
+            wrongly flags every fact extracted from it, not just the one
+            actually about that third party.
+          - Relatedness: a fact clearly contradicted by ONE sentence in
+            the episode can look "unrelated" when compared against the
+            WHOLE episode, since most of the episode is about other
+            things — downgrading a real REJECT to REVIEW for the wrong
+            reason.
+
+        Confirmed via test_attribution_narrowing.py: a 3-sentence source
+        (Chennai / peanuts+salad / brother-is-a-lawyer) triggered both
+        failure modes until this narrowing was applied to both guards.
+
+        Falls back to the full source, unchanged, if there's only one
+        sentence — this narrowing is an improvement on top of existing
+        behaviour, not a requirement for it to keep working.
+        """
+        sentences = split_sentences(source)
+        if len(sentences) <= 1:
+            return source
+
+        best_sentence = source
+        best_score = -1.0
+        for sentence in sentences:
+            score = self._relatedness(sentence, fact)
+            if score > best_score:
+                best_score = score
+                best_sentence = sentence
+
+        return best_sentence
+
     def _decision(
         self,
         verdict: str,
@@ -291,8 +337,16 @@ class MemoryGate:
         # The NLI model has no notion of whose fact this is: "my brother is a
         # lawyer" entails "the user is a lawyer" at 0.99. Downgrade rather
         # than storing a misattribution.
+        #
+        # Attribution is checked against the sentence most relevant to this
+        # specific fact, not the full source — a multi-sentence source (the
+        # normal shape for a whole conversation episode) can otherwise let a
+        # third-party mention anywhere in it wrongly flag unrelated facts.
+        # Faithfulness scoring above still uses the full source unchanged;
+        # only this pattern-matching step is narrowed.
         if self.policy.check_attribution:
-            attribution = check_attribution(source, fact)
+            attribution_source = self._narrow_source_for_fact(source, fact)
+            attribution = check_attribution(attribution_source, fact)
             if attribution.third_party and attribution.confidence == "high":
                 return self._decision(
                     verdict=REVIEW,
@@ -307,9 +361,17 @@ class MemoryGate:
         # emits high contradiction on pairs that simply have nothing to do
         # with each other. Rejecting those is silent data loss: an unsupported
         # fact should be flagged, not discarded.
+        #
+        # Relatedness is measured against the sentence most relevant to this
+        # fact, not the full source — otherwise a fact clearly contradicted
+        # by ONE sentence in a multi-topic source can look "unrelated" when
+        # compared against the WHOLE source, wrongly downgrading a real
+        # contradiction to REVIEW. See _narrow_source_for_fact for the full
+        # reasoning; confirmed via test_attribution_narrowing.py.
         relatedness = None
         if result.label in self.policy.reject_on:
-            relatedness = self._relatedness(source, fact)
+            relatedness_source = self._narrow_source_for_fact(source, fact)
+            relatedness = self._relatedness(relatedness_source, fact)
             if relatedness < self.policy.min_relatedness:
                 return self._decision(
                     verdict=REVIEW,

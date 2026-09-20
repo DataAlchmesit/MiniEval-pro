@@ -145,6 +145,23 @@ def _find_third_person_subject(text: str) -> list[str]:
     return found
 
 
+def split_sentences(text: str) -> list[str]:
+    """
+    Split source text into sentences on ./!/? boundaries.
+
+    Deliberately simple — this exists to let a caller narrow attribution
+    checking to the sentence most relevant to a specific fact, not to be a
+    general-purpose sentence tokenizer. It will mishandle abbreviations
+    ("Dr. Smith") and decimals, which is an acceptable tradeoff here: a
+    slightly wrong split still narrows the search space, it just might not
+    split at the exact grammatical boundary. Falls back to treating the
+    whole text as one sentence if no boundary is found.
+    """
+    import re
+    pieces = re.split(r"(?<=[.!?])\s+", text.strip())
+    return [p for p in pieces if p]
+
+
 def _fact_subject_is_user(fact: str) -> bool:
     """
     Does the candidate fact claim something about the user specifically?
