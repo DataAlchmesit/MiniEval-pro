@@ -293,7 +293,22 @@ memory) but for a reason that was never actually verified as sound.
 Both of these are documented rather than silently patched, in keeping with
 this project's position that a trust tool should state its own failure
 modes plainly.
+Relatedness guard. NLI models have three labels and none of them means "these
+texts are unrelated." Given an unrelated pair the model is forced to choose, and
+often chooses contradiction - "I had a salad for lunch" versus "the user is a doctor"
+returns contradiction at 0.985. When similarity falls below the policy floor, the
+contradiction signal is treated as unreliable and the fact is flagged rather than discarded.
 
+Attribution guard — broadened pronoun check trades false negatives for false positives.
+Two silent false-STORE gaps were found and fixed: the possessive check only matched
+"my," missing "her brother," "their neighbour," and similar; and the third-person pronoun 
+check only ran when a reporting verb like "said" was present, missing plain sentences
+like "she works as a lawyer." Fixing both required checking for third-person 
+pronouns (he/she/they/etc.) anywhere in the source, not just as a clear grammatical subject.
+This can now flag sentences where the pronoun isn't the subject of the fact 
+— e.g. "I told her about the new apartment I found" scores 0.99 faithful but is flagged REVIEW because
+"her" appears in the source. This is the safer direction to err in (a false positive costs
+a glance, not lost data), but it's a real, observed tradeoff, not a free fix.
 ---
 
 ## Project structure
