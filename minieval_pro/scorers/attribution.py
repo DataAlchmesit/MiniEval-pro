@@ -15,28 +15,38 @@ the source attribute this to the speaker, or to a third party?
 Scope and limits — stated plainly:
 
     This is a heuristic over surface patterns, not a coreference resolver.
-    It catches the common constructions ("my brother", "her neighbour's cat",
-    "my colleague said", "she works as...") and will miss unusual phrasings.
-    It is deliberately conservative: when third-party attribution is
-    detected it *downgrades* a fact to REVIEW rather than rejecting it, so
-    a false positive costs a human glance rather than lost information.
+    It catches the common constructions ("my brother", "her neighbour's
+    cat", "my colleague said", "she works as...") and will miss unusual
+    phrasings. It is deliberately conservative: when third-party
+    attribution is detected it *downgrades* a fact to REVIEW rather than
+    rejecting it, so a false positive costs a human glance rather than
+    lost information.
 
-Fixed 2026 — two confirmed gaps, found via test_attribution_gaps.py:
+Fix history:
 
-    1. The possessive check only matched the literal word "my". "Her
-       brother is a lawyer" produced third_party=False, confidence=high —
-       the guard actively vouched the fact was safe when it wasn't. Now
-       matches my/her/his/their/our.
+    1. Possessive check originally only matched "my". Widened to
+       my/her/his/their/our — "her brother is a lawyer" previously
+       produced third_party=False, confidence=high (a silent false-STORE
+       risk), now correctly caught.
 
-    2. The third-person pronoun check (he/she/they/...) only ran inside
-       the reporting-verb branch, so a plain declarative sentence like
-       "She works as a lawyer" with no reporting verb never reached it at
-       all. Now runs independently as its own check.
+    2. Third-person pronoun check originally only ran inside the
+       reported-speech branch, missing plain declarative sentences like
+       "she works as a lawyer downtown" with no reporting verb. Added as
+       an independent standalone check.
 
-    Both produced the same dangerous silent-STORE failure mode this
-    module exists to prevent — confidence=high, detected=[], "No
-    third-party attribution detected" — on inputs that were, in fact,
-    third-party attributions.
+    3. The standalone check from (2) is unconditional — it flags a
+       third-person pronoun anywhere in the source, regardless of
+       grammatical role. This caused a real false positive, found via
+       the attribution regression corpus (neg_002): "I told her about
+       the new apartment I found" was flagged, because "her" appears in
+       the source — even though "her" is the OBJECT of "told" (someone
+       the user spoke TO), not the subject of any fact. Fixed by
+       excluding a pronoun when it immediately follows a small set of
+       common verbs that take a person as their object rather than
+       their subject (OBJECT_POSITION_VERBS below). This is a targeted
+       heuristic improvement, not a grammatical parse — it narrows the
+       false-positive class demonstrated by neg_002, it does not
+       eliminate every possible false positive of this shape.
 """
 
 from __future__ import annotations
@@ -61,12 +71,13 @@ THIRD_PARTY_RELATIONS = [
     "cousin", "uncle", "aunt", "nephew", "niece",
     "grandmother", "grandfather", "grandma", "grandpa",
     "doctor", "teacher", "landlord", "client", "customer",
+    "teammate",
 ]
 
 # Possessive pronouns that mark the following relation as belonging to
-# someone other than the speaker. "My" was the only one checked before —
-# "her", "his", "their", "our" describe a third party's relation just as
-# clearly and were previously invisible to this guard entirely.
+# someone other than the speaker. "My" was the only one checked
+# originally — "her", "his", "their", "our" describe a third party's
+# relation just as clearly.
 THIRD_PARTY_POSSESSIVES = ["her", "his", "their", "our"]
 
 # Verbs that mark reported speech — the source is relaying someone else's
@@ -79,6 +90,18 @@ REPORTING_VERBS = [
 
 # Third-person subject pronouns appearing as the actor of the fact.
 THIRD_PERSON_SUBJECTS = ["he", "she", "they", "him", "her", "them"]
+
+# Common verbs that typically take a person as their OBJECT, not subject
+# — "I told her", "I asked him", "I invited them". A third-person pronoun
+# immediately following one of these is very likely the object of the
+# sentence (someone the speaker addressed or interacted with), not the
+# subject of a fact being reported. This list is deliberately small and
+# common-case; it will not catch every object-position construction, the
+# same tradeoff as every other heuristic in this module.
+OBJECT_POSITION_VERBS = [
+    "told", "asked", "informed", "showed", "gave", "called",
+    "invited", "helped", "thanked", "visited", "met", "saw",
+]
 
 
 @dataclass
@@ -95,16 +118,29 @@ class AttributionResult:
         return not self.speaker_is_subject
 
 
+def split_sentences(text: str) -> list[str]:
+    """
+    Split source text into sentences on ./!/? boundaries.
+
+    Deliberately simple — this exists to let a caller narrow attribution
+    checking to the sentence most relevant to a specific fact, not to be a
+    general-purpose sentence tokenizer. It will mishandle abbreviations
+    ("Dr. Smith") and decimals, which is an acceptable tradeoff here: a
+    slightly wrong split still narrows the search space, it just might not
+    split at the exact grammatical boundary. Falls back to treating the
+    whole text as one sentence if no boundary is found.
+    """
+    pieces = re.split(r"(?<=[.!?])\s+", text.strip())
+    return [p for p in pieces if p]
+
+
 def _find_possessive_third_parties(text: str) -> list[str]:
     """
     Find '<possessive> <relation>' constructions, with or without a
     possessive 's.
 
     Covers "my brother", "her neighbour's", "their colleague" — any of
-    my/her/his/their/our followed by a relation word. Previously only
-    matched "my", which meant "her brother is a lawyer" produced no
-    signal at all despite being exactly as clear a third-party
-    attribution as "my brother is a lawyer".
+    my/her/his/their/our followed by a relation word.
     """
     found = []
     lowered = text.lower()
@@ -127,39 +163,31 @@ def _find_reported_speech(text: str) -> list[str]:
     return found
 
 
-def _find_third_person_subject(text: str) -> list[str]:
+def _find_third_person_subject(text: str, exclude_object_position: bool = False) -> list[str]:
     """
-    Find third-person subject pronouns (he/she/they/...) anywhere in the
-    source, independent of whether a reporting verb is present.
+    Find third-person subject pronouns (he/she/they/...) in the source.
 
-    Previously this check only ran inside the reported-speech branch, so
-    a plain declarative sentence like "She works as a lawyer downtown" —
-    no "my", no "said" — never reached any third-party check at all and
-    fell straight through to speaker_is_subject=True, confidence=high.
+    exclude_object_position: when True, a pronoun immediately preceded by
+    one of OBJECT_POSITION_VERBS ("told her", "asked him") is NOT counted
+    — it's very likely the object of the sentence, not the subject of a
+    fact. Used by the standalone fallback check in check_attribution(),
+    which previously flagged ANY pronoun occurrence regardless of role
+    and produced a real false positive (see fix history above). Left as
+    False by default so the reported-speech branch's internal use of this
+    function (a different, lower-risk context) is unchanged.
     """
     found = []
     lowered = text.lower()
     for pronoun in THIRD_PERSON_SUBJECTS:
-        if re.search(rf"\b{re.escape(pronoun)}\b", lowered):
+        for match in re.finditer(rf"\b{re.escape(pronoun)}\b", lowered):
+            if exclude_object_position:
+                preceding_text = lowered[:match.start()]
+                preceding_words = preceding_text.split()
+                if preceding_words and preceding_words[-1] in OBJECT_POSITION_VERBS:
+                    continue
             found.append(pronoun)
+            break  # one hit per pronoun is enough to know it's present
     return found
-
-
-def split_sentences(text: str) -> list[str]:
-    """
-    Split source text into sentences on ./!/? boundaries.
-
-    Deliberately simple — this exists to let a caller narrow attribution
-    checking to the sentence most relevant to a specific fact, not to be a
-    general-purpose sentence tokenizer. It will mishandle abbreviations
-    ("Dr. Smith") and decimals, which is an acceptable tradeoff here: a
-    slightly wrong split still narrows the search space, it just might not
-    split at the exact grammatical boundary. Falls back to treating the
-    whole text as one sentence if no boundary is found.
-    """
-    import re
-    pieces = re.split(r"(?<=[.!?])\s+", text.strip())
-    return [p for p in pieces if p]
 
 
 def _fact_subject_is_user(fact: str) -> bool:
@@ -209,7 +237,7 @@ def check_attribution(source: str, fact: str) -> AttributionResult:
     # Reported speech: "my colleague mentioned she is moving" — the subject of
     # the reported clause is a third party.
     if reporting:
-        third_person = _find_third_person_subject(source)
+        third_person = _find_third_person_subject(source, exclude_object_position=True)
         if third_person:
             return AttributionResult(
                 speaker_is_subject=False,
@@ -231,9 +259,11 @@ def check_attribution(source: str, fact: str) -> AttributionResult:
         )
 
     # Plain third-person subject with no possessive and no reporting verb —
-    # e.g. "She works as a lawyer downtown." Checked independently now,
-    # rather than only as a sub-check inside the reporting-verb branch.
-    third_person = _find_third_person_subject(source)
+    # e.g. "She works as a lawyer downtown." Checked independently, with
+    # object-position pronouns excluded — "I told her about..." should NOT
+    # trigger this, since "her" there is the object of "told", not the
+    # subject of a fact. See fix history (3) above.
+    third_person = _find_third_person_subject(source, exclude_object_position=True)
     if third_person:
         return AttributionResult(
             speaker_is_subject=False,
