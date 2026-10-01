@@ -1,5 +1,5 @@
 """
-Audit logging — an append-only record of every gate decision.
+Audit logging — an append-only, hash-chained record of every gate decision.
 
 Why this exists
 ---------------
@@ -16,14 +16,23 @@ the evidence, and the policy in force does.
 Design choices
 --------------
 Append-only by construction. Entries are written one JSON object per line to
-a file opened in append mode. Nothing rewrites earlier lines. This is not
-enforced by permissions or checksums — a determined operator can edit the
-file — but the format makes accidental mutation implausible and any edit
-visible in a diff.
+a file opened in append mode. Nothing rewrites earlier lines. Previously this
+was enforced by convention only — a determined operator could edit the file
+and nothing would detect it.
+
+Hash-chained (added after a real external project — Vestige, a signed
+append-only memory log for AI agents — showed what "append-only" should
+actually guarantee). Each entry now carries a hash of its own content plus
+the previous entry's hash, so the log forms a chain: altering any entry
+breaks every hash after it, and verify_chain() below catches that
+deterministically rather than relying on the file format alone to imply
+integrity.
 
 Human-readable. JSONL survives without this library. If MiniEval disappears
 tomorrow the log is still a text file anyone can read, grep, or load into
 pandas. Binary or proprietary formats make an audit trail hostage to its tool.
+The hash fields are visible in plain JSON too — verification doesn't require
+this library either, just re-deriving a sha256 the same way.
 
 Policy captured per entry. Each line records the policy name, version and
 fingerprint that produced the decision. Change a threshold next month and the
@@ -53,12 +62,25 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, Optional, Union
 import csv
+import hashlib
 import io
 import json
 import os
 
 
 DEFAULT_LOG_NAME = "minieval_audit.jsonl"
+
+# Fixed 64-character placeholder (matching sha256's hex digest length) used
+# as the "previous hash" for the first entry in a chain. Distinguishable
+# from any real hash (a real sha256 output is extremely unlikely to be all
+# zeros), so a reader can tell "this is the genesis entry" from "this entry
+# claims no predecessor but isn't actually first" at a glance.
+GENESIS_HASH = "0" * 64
+
+# Fields that are chain bookkeeping, not decision content. Excluded when
+# computing an entry's own content hash — a field can't be part of its own
+# hash input.
+_HASH_METADATA_FIELDS = {"prev_hash", "entry_hash"}
 
 
 def _default_log_path() -> Path:
@@ -75,9 +97,23 @@ def _default_log_path() -> Path:
     return Path.cwd() / DEFAULT_LOG_NAME
 
 
+def _content_hash(prev_hash: str, entry_content: dict) -> str:
+    """
+    sha256 of (prev_hash + canonical JSON of entry_content).
+
+    Canonical means sort_keys=True and fixed separators — two dicts with
+    the same keys and values always serialize identically regardless of
+    insertion order, so the same logical entry always hashes the same way.
+    """
+    payload = prev_hash + json.dumps(
+        entry_content, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 class AuditLog:
     """
-    Append-only JSONL record of gate decisions.
+    Append-only, hash-chained JSONL record of gate decisions.
 
     Usage:
         log = AuditLog()                      # ./minieval_audit.jsonl
@@ -89,6 +125,7 @@ class AuditLog:
         for entry in log.read():
             ...
 
+        ok, report = log.verify_chain()
         log.to_csv("audit.csv")
     """
 
@@ -99,7 +136,7 @@ class AuditLog:
 
     def record(self, decision) -> dict:
         """
-        Append one decision to the log.
+        Append one decision to the log, linked to the previous entry by hash.
 
         Accepts anything with a `to_dict()` method — GateDecision,
         AdjudicationDecision, or a caller's own record type — or a plain dict.
@@ -112,6 +149,13 @@ class AuditLog:
         # timestamp is when it was made. They differ if a caller batches
         # writes, and an auditor may care about both.
         entry["recorded_at"] = datetime.now(timezone.utc).isoformat()
+
+        prev_hash = self._last_entry_hash()
+        content = {k: v for k, v in entry.items() if k not in _HASH_METADATA_FIELDS}
+        entry_hash = _content_hash(prev_hash, content)
+
+        entry["prev_hash"] = prev_hash
+        entry["entry_hash"] = entry_hash
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with open(self.path, "a", encoding="utf-8") as f:
@@ -126,6 +170,36 @@ class AuditLog:
             self.record(d)
             count += 1
         return count
+
+    def _last_entry_hash(self) -> str:
+        """
+        The entry_hash of the most recently written entry, or GENESIS_HASH
+        if the log is empty or its last entry predates hash-chaining.
+
+        Reads the whole file's last entry rather than maintaining in-memory
+        state, which keeps AuditLog instances stateless and safe to create
+        fresh at any time — the cost is O(n) per write on a very large log,
+        an honest tradeoff for a simple, always-correct implementation
+        rather than a cache that could drift from the file on disk.
+        """
+        if not self.path.exists():
+            return GENESIS_HASH
+
+        last_entry = None
+        with open(self.path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    last_entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+        if last_entry is None:
+            return GENESIS_HASH
+
+        return last_entry.get("entry_hash", GENESIS_HASH)
 
     # -- reading -----------------------------------------------------------
 
@@ -155,6 +229,104 @@ class AuditLog:
 
     def count(self) -> int:
         return sum(1 for _ in self.read())
+
+    # -- integrity -----------------------------------------------------------
+
+    def verify_chain(self) -> tuple[bool, dict]:
+        """
+        Walk the whole log and confirm every entry's hash actually matches
+        its content plus the previous entry's hash.
+
+        Returns (ok, report). report always has:
+            "total"              entries examined
+            "verified"           entries whose hash checked out AND are not
+                                  downstream of any break
+            "unhashed"           entries written before hash-chaining existed
+                                  (no entry_hash field) — not a tamper signal,
+                                  just a log that predates this feature
+            "broken_at"          indices where the entry's OWN hash doesn't
+                                  match its recomputed content+prev_hash —
+                                  direct evidence that entry was altered
+            "compromised"        indices that pass their own hash check but
+                                  come after a broken entry, so cannot be
+                                  trusted either — their prev_hash correctly
+                                  points at the ORIGINAL (now-known-bad)
+                                  upstream hash, which makes them internally
+                                  self-consistent but still part of a chain
+                                  with a known break in it
+
+        ok is True only if both broken_at and compromised are empty.
+
+        Why "compromised" exists as its own category, not folded into
+        broken_at: a downstream entry that was never itself edited will
+        correctly recompute its own hash against the (stale) hash its
+        upstream neighbour still has on file — because a tamperer who only
+        edits content and leaves the old hash in place doesn't touch
+        anything downstream. That entry's own math is internally
+        consistent. But "internally consistent" is not the same as
+        "trustworthy": it's anchored to a chain link that is already known
+        to be broken. Reporting it as merely "verified" would understate
+        the damage; this field makes the honest claim explicit instead —
+        confirmed via test_hash_chain.py, which tampers one entry and
+        checks that every entry after it is flagged, not just the one
+        directly edited.
+
+        unhashed entries don't count as broken or compromised — a log that
+        mixes a legacy unhashed prefix with a hashed suffix is not
+        "tampered," it's a log where hashing was turned on partway through.
+        That prefix simply can't be verified either way, and this reports
+        that honestly rather than crashing on it or silently trusting it.
+        """
+        entries = self.entries()
+        report = {
+            "total": len(entries),
+            "verified": 0,
+            "unhashed": 0,
+            "broken_at": [],
+            "compromised": [],
+        }
+
+        expected_prev = GENESIS_HASH
+        chain_started = False
+        chain_compromised = False
+
+        for i, entry in enumerate(entries):
+            if "entry_hash" not in entry or "prev_hash" not in entry:
+                report["unhashed"] += 1
+                chain_started = False
+                chain_compromised = False
+                continue
+
+            content = {k: v for k, v in entry.items() if k not in _HASH_METADATA_FIELDS}
+
+            if not chain_started:
+                expected_prev = entry["prev_hash"]
+                chain_started = True
+
+            recomputed = _content_hash(expected_prev, content)
+            own_hash_ok = (
+                entry["prev_hash"] == expected_prev
+                and entry["entry_hash"] == recomputed
+            )
+
+            if not own_hash_ok:
+                report["broken_at"].append(i)
+                chain_compromised = True
+            elif chain_compromised:
+                report["compromised"].append(i)
+            else:
+                report["verified"] += 1
+
+            # Advance using the entry's OWN stored hash (what downstream
+            # entries were actually chained against at write time), not
+            # the recomputed one — this is what makes a downstream entry's
+            # self-consistency check meaningful at all, and is why
+            # "compromised" has to be tracked as a separate signal rather
+            # than expecting the raw hash math to propagate a break alone.
+            expected_prev = entry["entry_hash"]
+
+        ok = len(report["broken_at"]) == 0 and len(report["compromised"]) == 0
+        return ok, report
 
     # -- export ------------------------------------------------------------
 
