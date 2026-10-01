@@ -47,6 +47,7 @@ The gate : checking a fact against its source before storing it is a thin wrappe
 What's harder to bolt on afterwards is a record that survives scrutiny months later: hash-chained so tampering is detectable, versioned by the exact policy in force when each decision was made, with the specific span of source text each verdict is based on, so a regulator or a security lead can ask *"what was decided about this fact, under which rules, why, and has this record been touched since?"* and get a real, provable answer.
  
 That's the part a memory engine focused on recall and latency has no reason to build. See [The audit trail](#the-audit-trail) below.
+
 ---
 
 ## Why this is differentiated
@@ -257,11 +258,12 @@ A separate, larger regression corpus (sibling/family possession, reported speech
 A regression corpus (13 cases) was contributed upstream to [Mem0](https://github.com/mem0ai/mem0) at a maintainer's request, after a technical exchange about where a pre-write verification hook should live in their pipeline. Building it against Mem0's real extraction output not synthetic examples surfaced two genuine false positives in this guard, both fixed and documented in the corpus notes.
  
 Separately: an attempt to reproduce third-party misattribution against Mem0's real `add()` pipeline (local Ollama models) did **not** succeed in three attempts. What was found instead was extraction non-determinism, the same input produced a different number of facts across runs. Reported as a negative result, not reframed as a win testing against a real external system found real things, just not the specific thing being tested for.
+
 ---
 
 ## Dashboard
 
-A local web view — audit history plus live checking.
+A local web view - audit history plus live checking.
  
 ```bash
 pip install fastapi uvicorn
@@ -343,5 +345,5 @@ MIT - use it, modify it, ship it.
 
 ---
 
-**Preeti Soni** — building tools that make AI systems trustworthy.
+**Preeti Soni** - building tools that make AI systems trustworthy.
 [LinkedIn](https://www.linkedin.com/in/preeti-soni-a5b8b6259/) · [GitHub](https://github.com/DataAlchmesit)
