@@ -16,6 +16,7 @@ Usage:
     )
     print(decision.verdict)   # "REJECT"
     print(decision.reason)    # "Fact contradicts its source."
+    print(decision.evidence_span)  # the specific sentence the verdict is based on
 """
 
 from __future__ import annotations
@@ -128,6 +129,14 @@ class GateDecision:
     contradiction: Optional[float] = None
     neutral: Optional[float] = None
     relatedness: Optional[float] = None
+    # The specific sentence of `source` that the verdict is actually based
+    # on, when the source has more than one sentence. Previously computed
+    # internally by the narrowing guards (_narrow_source_for_fact) and
+    # discarded — now attached to the decision so an audit log entry can
+    # point at the exact span of text that drove the outcome, not just a
+    # prose `reason` and raw scores. None when the source is a single
+    # sentence (nothing to narrow).
+    evidence_span: Optional[str] = None
 
     @property
     def stored(self) -> bool:
@@ -252,7 +261,8 @@ class MemoryGate:
         Used by both the attribution guard and the relatedness guard —
         not by the main faithfulness scoring, which still uses the full
         source unchanged, since broader context can legitimately matter
-        for entailment reasoning.
+        for entailment reasoning. Its result is also now surfaced to the
+        caller as `evidence_span` on the returned decision.
 
         Why this exists: both guards were originally written assuming a
         source is about one thing. When a source is a whole multi-topic
@@ -299,6 +309,7 @@ class MemoryGate:
         result: FaithfulnessResult,
         reason: str,
         relatedness: Optional[float] = None,
+        evidence_span: Optional[str] = None,
     ) -> GateDecision:
         return GateDecision(
             verdict=verdict,
@@ -315,6 +326,7 @@ class MemoryGate:
             contradiction=getattr(result, "contradiction", None),
             neutral=getattr(result, "neutral", None),
             relatedness=relatedness,
+            evidence_span=evidence_span,
         )
 
     # -- public API --------------------------------------------------------
@@ -333,6 +345,15 @@ class MemoryGate:
         """
         result = self._score(source, fact)
 
+        # Computed once, reused as both the input to the guards below AND
+        # the evidence_span attached to whichever decision gets returned —
+        # previously computed inside the guards and discarded, now surfaced
+        # on the decision itself. None when the source is a single sentence
+        # (narrowing had nothing to narrow, so there's no distinct span to
+        # point at beyond the full source already on the decision).
+        narrowed = self._narrow_source_for_fact(source, fact)
+        evidence_span = narrowed if narrowed != source else None
+
         # Guard 1 — attribution.
         # The NLI model has no notion of whose fact this is: "my brother is a
         # lawyer" entails "the user is a lawyer" at 0.99. Downgrade rather
@@ -345,8 +366,7 @@ class MemoryGate:
         # Faithfulness scoring above still uses the full source unchanged;
         # only this pattern-matching step is narrowed.
         if self.policy.check_attribution:
-            attribution_source = self._narrow_source_for_fact(source, fact)
-            attribution = check_attribution(attribution_source, fact)
+            attribution = check_attribution(narrowed, fact)
             if attribution.third_party and attribution.confidence == "high":
                 return self._decision(
                     verdict=REVIEW,
@@ -354,6 +374,7 @@ class MemoryGate:
                     source=source,
                     result=result,
                     reason=f"Possible misattribution. {attribution.explanation}",
+                    evidence_span=evidence_span,
                 )
 
         # Guard 2 — relatedness.
@@ -370,8 +391,7 @@ class MemoryGate:
         # reasoning; confirmed via test_attribution_narrowing.py.
         relatedness = None
         if result.label in self.policy.reject_on:
-            relatedness_source = self._narrow_source_for_fact(source, fact)
-            relatedness = self._relatedness(relatedness_source, fact)
+            relatedness = self._relatedness(narrowed, fact)
             if relatedness < self.policy.min_relatedness:
                 return self._decision(
                     verdict=REVIEW,
@@ -385,6 +405,7 @@ class MemoryGate:
                         f"rather than rejected."
                     ),
                     relatedness=relatedness,
+                    evidence_span=evidence_span,
                 )
 
             return self._decision(
@@ -394,6 +415,7 @@ class MemoryGate:
                 result=result,
                 reason="Fact contradicts its source.",
                 relatedness=relatedness,
+                evidence_span=evidence_span,
             )
 
         if result.label == "faithful" and result.score >= self.policy.store_threshold:
@@ -403,6 +425,7 @@ class MemoryGate:
                 source=source,
                 result=result,
                 reason="Fact is supported by its source.",
+                evidence_span=evidence_span,
             )
 
         return self._decision(
@@ -414,6 +437,7 @@ class MemoryGate:
                 "Fact is neither clearly supported nor contradicted. "
                 "Flagged rather than guessed."
             ),
+            evidence_span=evidence_span,
         )
 
     def check_many(self, source: str, facts: list[str]) -> list[GateDecision]:
