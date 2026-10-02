@@ -46,7 +46,7 @@ The gate : checking a fact against its source before storing it is a thin wrappe
  
 What's harder to bolt on afterwards is a record that survives scrutiny months later: hash-chained so tampering is detectable, versioned by the exact policy in force when each decision was made, with the specific span of source text each verdict is based on, so a regulator or a security lead can ask *"what was decided about this fact, under which rules, why, and has this record been touched since?"* and get a real, provable answer.
  
-That's the part a memory engine focused on recall and latency has no reason to build. See [The audit trail](#the-audit-trail) below.
+That's the part a memory engine focused on recall and latency has no reason to build.
 
 ---
 
@@ -167,6 +167,7 @@ Every entry records the fact, its source, the verdict, the reason, the exact sou
  "entailment": 0.0001, "contradiction": 0.999, "neutral": 0.001,
  "relatedness": 0.7865, "timestamp": "2026-07-19T14:31:17+00:00",
  "prev_hash": "a3f8...", "entry_hash": "c710..."}
+
 ```
  
 Change a threshold next month and old entries still say what was in force when they were written. That is what makes a decision reproducible rather than merely recorded.
@@ -185,6 +186,8 @@ print(report)   # {'verified': N, 'broken_at': [...], 'compromised': [...], ...}
 Readable without this library. If MiniEval disappears, the log is still a text file anyone can grep  and the hash chain can still be independently verified with nothing but `hashlib`.
  
 `generate_report()` renders this into a document a compliance reviewer can actually read, decisions by outcome, why facts were flagged, blocked examples with their evidence, and which policy version governed each period.
+
+<img width="1920" height="849" alt="Screenshot 2026-10-02 090608" src="https://github.com/user-attachments/assets/ca3ff893-81e2-4c5c-b4c9-bbc7119846c6" />
 
 ---
 
@@ -273,6 +276,9 @@ python dashboard/app.py
 Open http://localhost:8000. Paste a source and a fact, watch the verdict appear with its evidence, and see it land in the decision log.
  
 Not shipped to PyPI. `pip install minieval-pro` gives you a library, not a web server.
+
+<img width="1920" height="970" alt="Screenshot 2026-10-02 090614" src="https://github.com/user-attachments/assets/a40cda87-3bb2-4450-86e9-46ce37148eca" />
+
 ---
 
 ### adjudicate() - known limitations
