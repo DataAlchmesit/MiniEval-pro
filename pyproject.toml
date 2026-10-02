@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "minieval-pro"
-version = "1.1.0"
+version = "1.2.0"
 requires-python = ">=3.10"
 description = "The trust layer for AI memory — verify every fact before it's stored, adjudicate conflicts by evidence, keep an auditable record."
 authors = [{ name = "Preeti Soni", email = "sonipreeti2528@gmail.com" }]

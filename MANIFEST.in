@@ -12,6 +12,7 @@ global-exclude __pycache__
 global-exclude *.db
 global-exclude *.jsonl
 global-exclude *.egg-info
+global-exclude gritvenv/*
 
 # Include the things that should ship
 include README.md

@@ -121,6 +121,21 @@ def api_export_csv():
     )
 
 
+@app.get("/api/verify")
+def api_verify():
+    """
+    Hash-chain integrity of the current log, for display in the UI.
+
+    Separated from /api/summary rather than folded into it: verification
+    means re-reading and re-hashing the whole log, which is a different
+    cost profile than the cheap counts /api/summary already does, and a
+    caller who only wants counts shouldn't pay for a verification pass
+    they didn't ask for.
+    """
+    ok, report = get_log().verify_chain()
+    return JSONResponse({"ok": ok, "report": report})
+
+
 # --------------------------------------------------------------------------
 # Page
 # --------------------------------------------------------------------------
@@ -183,6 +198,7 @@ PAGE = r"""<!DOCTYPE html>
   .result .top { display:flex; align-items:center; gap:12px; margin-bottom:10px; }
   .result .reason { font-size:13.5px; color:#4b5563; line-height:1.5; }
   .result .evidence { margin-top:10px; font-size:12px; color:#8b93a3; font-family:ui-monospace, Menlo, Consolas, monospace; }
+  .result .span-note { margin-top:8px; font-size:12.5px; color:#6a5bd0; background:#f5f3ff; padding:8px 11px; border-radius:7px; }
 
   table { width:100%; border-collapse:collapse; }
   th {
@@ -197,15 +213,24 @@ PAGE = r"""<!DOCTYPE html>
   .b-REVIEW { background:#fdf3e2; color:#c98a2e; }
   .fact { font-weight:500; }
   .src  { color:#8b93a3; }
+  .src .span-line { color:#7c6ee6; font-size:11.5px; margin-top:4px; }
   .num  { font-family:ui-monospace, Menlo, Consolas, monospace; color:#6b7280; font-size:12.5px; }
   .rsn  { color:#8b93a3; font-size:12px; }
 
-  .filters { display:flex; gap:7px; margin-bottom:14px; }
+  .filters { display:flex; gap:7px; margin-bottom:14px; align-items:center; }
   .chip {
     border:1px solid #e5e9f0; background:#fff; color:#4b5563; padding:6px 13px;
     border-radius:20px; font-size:12.5px; cursor:pointer;
   }
   .chip.on { background:#7c6ee6; color:#fff; border-color:#7c6ee6; }
+
+  .chain-badge {
+    margin-left:auto; display:inline-flex; align-items:center; gap:6px;
+    font-size:12px; padding:5px 11px; border-radius:16px; border:1px solid transparent;
+  }
+  .chain-ok   { background:#e6f4ee; color:#3f9d73; border-color:#c7e8d7; }
+  .chain-bad  { background:#fdeaea; color:#c0392b; border-color:#f5c6c6; }
+  .chain-dot  { width:7px; height:7px; border-radius:50%; background:currentColor; }
 
   .empty { text-align:center; color:#9ca3af; padding:34px; font-size:13.5px; }
   .foot { text-align:center; color:#9ca3af; font-size:12.5px; margin-top:26px; }
@@ -253,6 +278,7 @@ PAGE = r"""<!DOCTYPE html>
     <div class="top"><span class="badge" id="r-badge"></span><span class="num" id="r-score"></span></div>
     <div class="reason" id="r-reason"></div>
     <div class="evidence" id="r-evidence"></div>
+    <div class="span-note" id="r-span" style="display:none"></div>
   </div>
 </div>
 
@@ -278,6 +304,9 @@ PAGE = r"""<!DOCTYPE html>
     <div class="chip" data-f="STORE" onclick="setFilter('STORE')">Stored</div>
     <div class="chip" data-f="REJECT" onclick="setFilter('REJECT')">Blocked</div>
     <div class="chip" data-f="REVIEW" onclick="setFilter('REVIEW')">Review</div>
+    <span class="chain-badge" id="chain-badge" style="display:none">
+      <span class="chain-dot"></span><span id="chain-text"></span>
+    </span>
   </div>
   <table>
     <thead><tr>
@@ -309,15 +338,17 @@ let entries = [];
 let chartVerdicts = null, chartScores = null;
 
 async function load() {
-  const [sum, ent] = await Promise.all([
+  const [sum, ent, chain] = await Promise.all([
     fetch('/api/summary').then(r => r.json()),
     fetch('/api/entries?limit=500').then(r => r.json()),
+    fetch('/api/verify').then(r => r.json()),
   ]);
   entries = ent;
   renderStats(sum);
   renderPolicies(sum);
   renderTable();
   renderCharts(sum);
+  renderChainBadge(chain);
 }
 
 function renderStats(s) {
@@ -347,7 +378,7 @@ function renderPolicies(s) {
 
 function setFilter(f) {
   filter = f;
-  document.querySelectorAll('.chip').forEach(c =>
+  document.querySelectorAll('.chip[data-f]').forEach(c =>
     c.classList.toggle('on', c.dataset.f === f));
   renderTable();
 }
@@ -356,14 +387,42 @@ function renderTable() {
   const rows = filter === 'ALL' ? entries : entries.filter(e => e.verdict === filter);
   const tbody = document.getElementById('tbody');
   document.getElementById('empty').style.display = rows.length ? 'none' : 'block';
-  tbody.innerHTML = rows.map(e => `
+  tbody.innerHTML = rows.map(e => {
+    // evidence_span is the sentence the narrowing guards actually used,
+    // when it differs from the full source — show it as a second line
+    // under Source so the row explains WHICH part of a multi-sentence
+    // source drove the verdict, not just that one existed.
+    const hasSpan = e.evidence_span && e.evidence_span !== e.source;
+    const spanLine = hasSpan
+      ? `<div class="span-line">→ ${esc(e.evidence_span)}</div>`
+      : '';
+    return `
     <tr>
       <td><span class="badge b-${esc(e.verdict)}">${esc(e.verdict)}</span></td>
       <td class="fact">${esc(e.fact)}</td>
-      <td class="src">${esc(e.source)}</td>
+      <td class="src">${esc(e.source)}${spanLine}</td>
       <td class="num">${(e.faithfulness ?? 0).toFixed(2)}</td>
       <td class="rsn">${esc(e.reason || '')}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
+}
+
+function renderChainBadge(chain) {
+  const badge = document.getElementById('chain-badge');
+  const text = document.getElementById('chain-text');
+  const r = chain.report || {};
+  badge.style.display = 'inline-flex';
+  badge.classList.toggle('chain-ok', chain.ok);
+  badge.classList.toggle('chain-bad', !chain.ok);
+  if (chain.ok) {
+    text.textContent = r.unhashed
+      ? `Chain verified (${r.verified} hashed, ${r.unhashed} legacy)`
+      : `Chain verified (${r.verified})`;
+  } else {
+    const broken = (r.broken_at || []).length;
+    const compromised = (r.compromised || []).length;
+    text.textContent = `Chain integrity failed — ${broken} broken, ${compromised} compromised`;
+  }
 }
 
 function renderCharts(s) {
@@ -428,6 +487,15 @@ async function runCheck() {
     if (d.neutral != null)       bits.push('neutral ' + d.neutral.toFixed(3));
     if (d.relatedness != null)   bits.push('relatedness ' + d.relatedness.toFixed(3));
     document.getElementById('r-evidence').textContent = bits.join('   ');
+
+    const spanBox = document.getElementById('r-span');
+    if (d.evidence_span && d.evidence_span !== d.source) {
+      spanBox.textContent = 'Checked against: "' + d.evidence_span + '"';
+      spanBox.style.display = 'block';
+    } else {
+      spanBox.style.display = 'none';
+    }
+
     box.classList.add('show');
 
     await load();
