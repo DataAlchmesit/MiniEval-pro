@@ -2,7 +2,7 @@
 
 > **Everyone is racing to make AI remember more. Nobody is asking whether what it remembers is true.**
 
-[![PyPI version](https://img.shields.io/pypi/v/minieval-pro.svg)](https://pypi.org/project/minieval-pro/)
+[![PyPI version](https://img.shields.io/pypi/v/minieval-pro.svg)](https://pypi.org/project/minieval-pro/1.2.0/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
