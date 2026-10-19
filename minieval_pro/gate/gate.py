@@ -21,7 +21,7 @@ Usage:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, replace
 from datetime import datetime, timezone
 from typing import Optional
 import hashlib
@@ -30,6 +30,7 @@ import json
 from ..scorers.faithfulness import FaithfulnessScorer, FaithfulnessResult
 from ..scorers.relevance import RelevanceScorer
 from ..scorers.attribution import check_attribution, split_sentences
+from ..scorers.secrets_guard import check_secrets, redact
 
 
 # --------------------------------------------------------------------------
@@ -71,6 +72,12 @@ class Policy:
                           contradiction on pairs that simply have nothing to do
                           with each other. See note below on how this was chosen.
         check_attribution whether to run the third-party attribution pre-check
+        check_secrets     whether to refuse facts containing credential-like
+                          content (passwords, API keys, tokens) and redact
+                          such content from the decision, so it is not copied
+                          into the audit log. Faithfulness cannot catch this:
+                          a pasted password IS supported by the message that
+                          contains it.
 
     On min_relatedness — an empirical default, not a truth:
 
@@ -81,12 +88,13 @@ class Policy:
     """
 
     name: str = "default"
-    version: str = "1.0"
+    version: str = "1.1"
     store_threshold: float = 0.5
     reject_on: tuple[str, ...] = ("contradicts",)
     overwrite_requires_faithful: bool = True
     min_relatedness: float = 0.58
     check_attribution: bool = True
+    check_secrets: bool = True
 
     def fingerprint(self) -> str:
         """
@@ -335,6 +343,36 @@ class MemoryGate:
         """
         Decide whether a candidate fact should enter memory.
 
+        Runs the faithfulness / attribution / relatedness checks, then a
+        secrets check. A fact that contains a credential-like value is
+        REJECTED regardless of how faithful it is, and any credential-like
+        content is redacted from the returned decision (fact, source,
+        evidence_span, reason) so it is not written to the audit log.
+        """
+        decision = self._check_core(source, fact)
+        if not self.policy.check_secrets:
+            return decision
+
+        in_fact = check_secrets(fact)
+        in_source = check_secrets(source)
+        if not (in_fact.has_secret or in_source.has_secret):
+            return decision
+
+        changes = dict(
+            fact=redact(decision.fact),
+            source=redact(decision.source),
+            evidence_span=redact(decision.evidence_span) if decision.evidence_span else None,
+            reason=redact(decision.reason),
+        )
+        if in_fact.has_secret:
+            changes["verdict"] = REJECT
+            changes["reason"] = f"Not stored: {in_fact.explanation}"
+        return replace(decision, **changes)
+
+    def _check_core(self, source: str, fact: str) -> GateDecision:
+        """
+        Decide whether a candidate fact should enter memory.
+
         STORE   the fact is supported by its source
         REJECT  the fact contradicts its source
         REVIEW  neither clearly supported nor contradicted — a human decides
@@ -445,6 +483,46 @@ class MemoryGate:
         return [self.check(source, fact) for fact in facts]
 
     def adjudicate(
+        self,
+        existing_fact: str,
+        existing_source: str,
+        incoming_fact: str,
+        incoming_source: str,
+        existing_timestamp: Optional[str] = None,
+    ) -> AdjudicationDecision:
+        """
+        Decide whether an incoming memory may overwrite an existing one.
+
+        See _adjudicate_core for the faithfulness rule. On top of it: an
+        incoming fact containing a credential-like value never overwrites
+        anything (BLOCK), and credential-like content is redacted from the
+        returned decision so it is not copied into the audit log.
+        """
+        decision = self._adjudicate_core(
+            existing_fact, existing_source, incoming_fact, incoming_source,
+            existing_timestamp,
+        )
+        if not self.policy.check_secrets:
+            return decision
+
+        texts = [existing_fact, existing_source, incoming_fact, incoming_source]
+        incoming_secret = check_secrets(incoming_fact)
+        if not (incoming_secret.has_secret or any(check_secrets(t).has_secret for t in texts)):
+            return decision
+
+        changes = dict(
+            existing_fact=redact(decision.existing_fact),
+            incoming_fact=redact(decision.incoming_fact),
+            existing_source=redact(decision.existing_source) if decision.existing_source else None,
+            incoming_source=redact(decision.incoming_source) if decision.incoming_source else None,
+            reason=redact(decision.reason),
+        )
+        if incoming_secret.has_secret:
+            changes["verdict"] = BLOCK_OVERWRITE
+            changes["reason"] = f"Not stored: {incoming_secret.explanation}"
+        return replace(decision, **changes)
+
+    def _adjudicate_core(
         self,
         existing_fact: str,
         existing_source: str,
